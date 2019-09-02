@@ -1,0 +1,780 @@
+<meta charset="utf-8">
+<script>
+//console.log(location.protocol + "//" + location.host);
+SERVER = location.protocol+"//"+location.host+"/cgi-bin/";
+
+function global_variable(){
+  this.tables;
+  this.caches;
+}
+var g = new global_variable();
+g.caches = {};
+
+function main() {
+  //table {table-layout: fixed}\
+  document.write('\
+  <style>\
+  td {border-bottom: solid 1px silver;}\
+  textarea {width: 100%; -webkit-box-sizing: border-box;}\
+  .original_sentence span:hover {background-color: #fff2cc;}\
+  .remove:hover {background-color: red;}\
+  </style>\
+  <div>\
+  <textarea id="textarea" rows="10" placeholder=""></textarea>\
+  <div id="root"></div>\
+  </div>'
+  );
+  var placeholder = "Please write or paste Japanese sentences and press the enter key.";
+  placeholder += "\nYou can add a new line when you press shift + enter key.";
+  var bodyContents = document.getElementById('textarea');
+  bodyContents.addEventListener('keypress', onKeyPress);
+  bodyContents.setAttribute("placeholder", placeholder);
+}
+
+function onKeyPress(e) {
+  if(e.keyCode == 13) {
+    if(e.shiftKey != true && e.ctrlKey != true) {
+      e.preventDefault();
+      japanese_parse(document.getElementById("textarea").value);
+    }
+  }
+}
+
+function japanese_parse(s) {
+  if(s != "") {
+    var s = s.replace(/\r\n|\r|\n/g, "");
+    fetch(SERVER + "parse.py?sentences=" + encodeURIComponent(s))
+      .then(response => {if(response.ok) return response.text();})
+      .then(text => _func1(text));
+    window.onbeforeunload = function(e) {
+      e.returnValue = "";
+    }
+  }
+  return;
+  
+  function _func1(text) {
+    var rec = new function() {
+      this.i        = 0;
+      this.surface  = "";
+      this.reading  = "";
+      this.pos      = "";
+      this.baseform = "";
+      this.order    = 0;
+    }
+
+    _make_g_tables(text);  
+    //console.log('japanese_parse:g.tables="' + g.tables + '"');
+    if(g.tables.length > 0) {
+      var row1 = "";
+      rec.i = 0;
+      _read_rec(rec);
+      //console.log('japanese_parse:rec.baseform="' + rec.baseform + '"');
+      for(var i = 1; rec.surface != "end_of_table"; i++) {
+        var sentence = "";
+        var row2 = "";
+        while(rec.surface != "end_of_table" && rec.surface != "。") {
+          switch(rec.pos) {
+            case "助詞":
+            case "助動詞":
+            case "特殊":
+              sentence += rec.surface;
+              break;
+            default:
+              sentence += '<span';
+              if(japanese_kata2hira(rec.surface) != japanese_kata2hira(rec.reading)) {
+                sentence += ' title="' + rec.reading + '"';
+              }
+              var t_index = i - 1;
+              sentence += ' onclick="looking_up(' + rec.order + ',' + t_index + ')"';
+              sentence += '>' + rec.surface + '</span>';
+          }
+          _read_rec(rec);
+        }
+        if(rec.surface == "。") {
+          sentence += rec.surface;
+          _read_rec(rec);
+        }
+        row1 += '\
+        <br><li><span class="original_sentence">' + sentence + '</span>\
+        <textarea placeholder="(Your English traslation)"></textarea>\
+        <div></div></li>';
+      }
+      document.getElementById("root").innerHTML = '<ol>' + row1 + '</ol>';
+    }
+    return;
+    
+    function _read_rec(rec) {
+      if(rec.i < g.tables.length) {
+        rec.surface  = g.tables[rec.i].surface;
+        rec.reading  = g.tables[rec.i].reading;
+        rec.pos      = g.tables[rec.i].pos;
+        rec.baseform = g.tables[rec.i].baseform;
+        rec.order    = rec.i;
+        rec.i++;
+      } else {
+        rec.surface  = "end_of_table";
+      }
+    }
+  }
+
+  function _make_g_tables(text) {  
+    function japanese_table(surface, reading, pos, baseform) {
+      this.surface  = surface;
+      this.reading  = reading;
+      this.pos      = pos;
+      this.baseform = baseform;
+    }
+    const parser = new DOMParser();
+    var words = parser.parseFromString(text, "text/xml").getElementsByTagName("word");
+    var tables = [];
+    for(var i = 0; i < words.length; i++) {
+      var recs = new japanese_table(words[i].childNodes[0].innerHTML, 
+                                    words[i].childNodes[1].innerHTML,
+                                    words[i].childNodes[2].innerHTML,
+                                    words[i].childNodes[3].innerHTML);
+      tables.push(recs);
+    }
+    //console.log(tables);
+    for(var i = 0; i < tables.length; i++) {
+      //var currentOf = input_tables[i];
+      //Logger.log(currentOf);
+      var current = tables[i];
+      if(current.pos != "助詞") {
+        //Logger.log(/^[0-9]+$/.test(currentOf["reading"].replace(".", "")));
+        if(/^[0-9]+$/.test(current.reading.replace(".", "")) == true) {
+          current.pos = "数詞";
+          current.baseform = "";
+          if(i < tables.length - 1) {
+            var next = tables[i + 1];
+            if(next.pos == "接尾辞") {
+              current.reading = number_howToRead(current.reading, next.reading);
+              current.surface += next.surface;
+              current.baseform = next.baseform;
+              next.surface = "";
+            } else {
+              current.reading = number_howToRead(current.reading, "");
+            }
+          } else {
+            current.reading = number_howToRead(current.reading, "");
+          }
+
+          if(i > 0) {
+            var previous = tables[i - 1];
+            if(previous.pos == "特殊") {
+              switch(previous.reading) {
+                case "+":
+                  current.reading = "ぷらす" + current.reading;
+                  current.surface = "+" + current.surface;
+                  previous.surface = "";
+                  break;
+                case "-":
+                  current.reading = "まいなす" + current.reading;
+                  current.surface = "-" + current.surface;
+                  previous.surface = "";
+                  break;
+              }
+            }
+          }
+        }
+      }
+    }
+    //console.log('japanese_parse:tables="' + tables + '"');
+    g.tables = tables.filter(function(rec) {return rec.surface != "";});
+  }  
+}
+/*
+function japasese_test() {
+  if(true) {
+    answer = ""
+    html = ""
+    a = 0
+    for(var i = 0; i < tables.length; i++) {
+      currentOf = tables[i];
+      if(currentOf["surface"] != "") {
+        if(currentOf["pos"] != "助詞") {
+          text += currentOf["surface"];
+            if(jaconv_kata2hira(currentOf["surface"]) != jaconv_kata2hira(currentOf["reading"])) {
+              text += "(" + currentOf["reading"] + ")";
+            } else {
+              if(["数値", "特殊"].indexOf(currentOf["pos"]) == -1) {
+                if(jaconv_kata2hira(currentOf["surface"]) != jaconv_kata2hira(currentOf["reading"])) {
+                  text += "(" + currentOf["reading"] + ")";
+                }
+              }
+            }
+          }
+        } else {
+          a = a + 1
+          text += '<input type="text" size="5">';
+          answer += "  " + a + "." + currentOf["surface"];
+        }
+      }
+      //print(f'test1:i={i}, '
+      //      f'"{currentOf["surface"]}", "{currentOf["reading"]}", "{currentOf["pos"]}", "{currentOf["baseform"]}"')
+      
+      //print(f'"test1:text="{text}"')
+      //print(f'"test1:answer="{answer[2:]}"')
+    }
+    //for i in g.error_messages:
+    //  Logger.log("!!!!!!!!!!  " + i + "  !!!!!!!!!!";
+  }
+  return html;
+}
+*/
+
+function looking_up(g_index, t_index) {
+  var s = JSON.stringify(g.tables);
+  //console.log(s.length);
+  var root = document.getElementById("root");
+  //var results = japanese_looking_up(g_index);
+  var div = root.getElementsByTagName("div")[t_index];
+  if(div.innerHTML == "") {
+    //  style= visibility:ollapse; visibility:visible;
+    div.innerHTML = '\
+    <table width="100%" style="font-size: small;">\
+    <col width="0">\
+    <col width="0">\
+    <col width="100%">\
+    </table>';
+  }
+  var table = div.getElementsByTagName("table")[0];
+  var row1 = table.insertRow(0);
+  row1.insertCell(-1).innerHTML = '<span title="Remove" class="remove" onclick="remove(this)">・</span>';
+  row1.insertCell(-1).innerHTML = 'Surface:';
+  var row2 = table.insertRow(1);
+  row2.insertCell(-1);
+  row2.insertCell(-1).innerHTML = '<span style="white-space: nowrap;">Part of speech:</span>';
+  var row3 = table.insertRow(2);
+  row3.insertCell(-1);
+  row3.insertCell(-1).innerHTML = 'Baseform:';
+  var row4 = table.insertRow(3);
+  row4.insertCell(-1);
+  row4.insertCell(-1).innerHTML = 'Definitions:';
+
+  var rec = g.tables[g_index];
+
+  var cell1 = row1.insertCell(-1);
+  cell1.innerHTML = rec.surface;
+  if(japanese_kata2hira(rec.surface) != japanese_kata2hira(rec.reading)) {
+    cell1.innerHTML += '(' + rec.reading + ')';
+  }
+
+  var word = (rec.baseform != "" ? rec.baseform : rec.surface);
+  var jisho = g.caches[word];
+  if(jisho != undefined) {
+    _func1(jisho);
+  } else {
+    //console.log('looking_up:word="' + word + '"');
+    fetch(SERVER + "dictionary.py?word=" + encodeURIComponent(word))
+      .then(response => {if(response.ok) return response.text();})
+      .then(text => _func2(text));
+  }
+  return;
+  
+  function _func1(jisho) {
+    var cell2 = row2.insertCell(-1);
+    cell2.innerHTML = jisho.pos.replace(/\n/g, "<br>");
+    var cell3 = row3.insertCell(-1);
+    cell3.innerHTML = (rec.baseform != rec.surface ? rec.baseform : "");
+    var cell4 = row4.insertCell(-1);
+    cell4.innerHTML = jisho.results;
+    return;
+  }
+
+  function _func2(text) {
+    //console.log('looking_up_func1:t_index="' + t_index + '"');
+    //var _rec = g.tables[g_index];
+    jisho = _get_jisho();
+    g.caches[word] = jisho;
+    _func1(jisho);
+    return;
+
+    function _get_jisho() {
+      var pos_table = {形容詞:"adjective", 形容動詞:"na-adjective", 感動詞:"interjection", 副詞:"adverb",
+                      連体詞:"adnominal", 接続詞:"conjunction", 接頭辞:"prefix", 接尾辞:"suffix", 名詞:"noun",
+                      動詞:"verb", 助詞:"postpositional",助動詞:"auxiliary verb", 特殊:"special", 数詞:"numeral"};
+      //Logger.log(rec);
+      var searched = {pos:"", results:""};
+      var jisho = (new Function("return " + text))();
+      //console.log('looking_up_func1_get_jisho:text="'+text+'"');
+      //console.log('looking_up_func1_get_jisho:rec.baseform="'+rec.baseform+'"');
+      var surface_ruby = _get_ruby(rec.surface, rec.reading);
+      for(var i in jisho.data) {
+        //var jisho_ruby = _get_ruby(jisho.data[i].japanese[0].word, jisho.data[i].japanese[0].reading);
+        //console.log('looking_up_func1_get_jisho:surface_ruby="'+surface_ruby+'", jisho_ruby="'+jisho_ruby+'"');
+        switch(true) {
+          case rec.reading == jisho.data[i].japanese[0].reading:
+          case surface_ruby == _get_ruby(jisho.data[i].japanese[0].word, jisho.data[i].japanese[0].reading):
+          case _only_hiragana(rec.surface):
+          case rec.pos == "数詞":
+            var selected_flag = false;
+            var saved_pos_obj = [];
+            for(var j in jisho.data[i].senses) {
+              var jisho_pos_obj = jisho.data[i].senses[j].parts_of_speech;
+              if(jisho_pos_obj.length <= 0) {
+                jisho_pos_obj = saved_pos_obj;
+              }
+              for(var k in jisho_pos_obj) {
+                var jisho_pos = "\n" + jisho_pos_obj[k];
+                switch(true) {
+                  case rec.pos == "数詞":
+                    if(searched.pos.indexOf("\nNumeral") < 0){
+                      searched.pos += "\nNumeral";
+                      selected_flag = true;
+                    }
+                    break;
+                  default:
+                    if(jisho_pos.toLowerCase().indexOf(pos_table[rec.pos]) >= 0) {
+                      if(searched.pos.indexOf(jisho_pos) < 0){
+                        searched.pos += jisho_pos;
+                        selected_flag = true;
+                      }
+                    }
+                }
+              }
+              if(selected_flag == true) {
+                for(var k in jisho.data[i].senses[j].english_definitions) {
+                  searched.results += ", " + jisho.data[i].senses[j].english_definitions[k];
+                }
+              }
+              saved_pos_obj = jisho_pos_obj;
+            }
+            break;
+          default:
+            break;
+        }
+      }
+      //Logger.log(searched);
+      if(searched.results == "") {
+        searched.pos += "\n("+pos_table[rec.pos]+")";
+      }
+      searched.pos     = searched.pos.substr(1);
+      searched.results = searched.results.substr(2);
+      //Logger.log(searched);
+      return searched;
+      
+
+      function _get_ruby(kanji, kana) {
+        //Logger.log("kanji="+kanji+", kana="+kana);
+        var result = "";
+        switch(true) {
+          case kanji == undefined:
+            result = kana;
+            break;
+          case kana  == undefined:
+            result = "";
+            break;
+          case _only_hiragana(kanji):
+          case _only_katakana(kanji):
+            result = kanji;
+            break;
+          default:
+            var i = kanji.length - 1;
+            var j = kana.length - 1;
+            while(i >= 0 && j >= 0 && kanji[i] == kana[j]){
+                i--;
+                j--;
+            }
+            result = kana.substr(0, j + 1);
+        }
+        return result;
+      }      
+ 
+      function _only_hiragana(src) {
+        var result = /^[\u3041-\u3096]+$/.test(src);
+        return result;
+      }
+      
+      function _only_katakana(src) {
+        var result = /^[\u30a1-\u30f6\u30fc]+$/.test(src)
+        return result;
+      }           
+    }
+  }
+}
+
+function remove(obj) {
+  var tr = obj.parentNode.parentNode;
+  var table = tr.parentNode;
+  var obj_index = tr.rowIndex;
+  var i = _end_index(obj_index + 1);
+  //console.log('remove:i="'+i+'"');
+  for(; i >= obj_index; i--) {
+    table.deleteRow(i);
+  }
+  return;
+
+  function _end_index(i) {
+    //console.log('remove_end_index:table.rows.length="'+table.rows.length+'"');
+    for(; true; i++) {
+      switch(true) {
+        case i >= table.rows.length:
+        case table.rows[i].cells[0].innerHTML != "":
+          return i - 1;
+      }
+    }
+  }
+}
+
+function japanese_hira2kata(src) {
+  //Logger.log("src="+src));
+  var result = "";
+  if(src != undefined) {
+    result = src.replace(/[\u3041-\u3096]/g, function(match) {
+      var chr = match.charCodeAt(0) + 0x60;
+      return String.fromCharCode(chr);
+    });
+  }
+  return result;
+}
+
+function japanese_kata2hira(src) {
+  //Logger.log("src="+src));
+  var result = "";
+  if(src != undefined) {
+    result = src.replace(/[\u30a1-\u30f6]/g, function(match) {
+      var chr = match.charCodeAt(0) - 0x60;
+      return String.fromCharCode(chr);
+    });
+  }
+  return result;
+}
+
+function japanese_choose_je(language, messages, separator) {
+  var s = "";
+  switch(language){
+    case "j":
+      s = messages[0];
+      break;
+    case "e":
+      s = messages[1];
+      break;
+    case "je":
+      s = messages[0] + separator + messages[1];
+      break;
+    case "ej":
+      s = messages[1] + separator + messages[0];
+      break;
+  }
+  return(s)
+}
+
+function number_howToRead(string, suffix) {
+  //Logger.log('number_howToRead:reading="'+string+'", suffix="'+suffix+'"');
+  var results   = number_toHiragana(string);
+  var result    = results[0];
+  var last_word = results[1];
+  //console.log('number_howToRead:result="' + result + '", last_word="' + last_word + '"');
+  
+  if(suffix != "") {
+    switch(suffix) {
+      case "ねん":
+        result = result.replace("よん", "よ").replace("なな", "しち") + suffix;
+        break;
+      case "がつ":
+        result = result.replace("よん", "し").replace("なな", "しち").replace("きゅう", "く") + suffix;
+        break;
+      case "にち":
+        result = result.replace("なな", "しち").replace("きゅう", "く");
+        var table = {いち:"ついたち", に:"ふつか", さん:"みっか", よん:"よっか", ご:"いつか",
+                     ろく:"むいか", しち:"なのか", はち:"ようか", く:"ここのか", じゅう:"とうか",
+                     じゅうよん:"じゅうよっか", にじゅう:"はつか", にじゅうよん:"にじゅうよっか"};
+        var s = table[result];
+        result = (s != undefined ? s : result + suffix);
+        break;
+      case "じ":
+      case "じかん":
+        result = result.replace("よん", "よ").replace("なな", "しち").replace("きゅう", "く") + suffix;
+        break
+      case "にん":
+        var table = {いち:"ひとり", に:"ふたり"};
+        var n = result.replace("よん", "よ").replace("なな", "しち");
+        var s = table[n];
+        result = (s != undefined ? s : n + suffix);
+        break;
+      case "つ":
+        var table = {いち:"ひと", に:"ふた", さん:"みっ", よん:"よっ", ご:"いつ", ろく:"むっ",
+                     なな:"なな", はち:"やっ", きゅう:"ここの"};
+        var s = table[last_word] + suffix;
+        result = (s != undefined ? s : "?");
+        break;
+      default:
+        var table = {えき:["k"],
+                     えん:["o", {れい:"ぜろえん"}],
+                     こ:["o"],
+                     とう:["o"],
+                     びょう:["o"],
+                     ばんめ:["-"],
+                     ふん:["o"],
+                     へいべい:["-"],
+                     ぽいんと:["-", {じゅう:"じゅっぽいんと"}],
+                     ほん: ["o", {れい:"ぜろほん", さん: "さんぼん", よん:"よんほん", せん:"せんぼん"}]};
+        //print(f"reading_number:table={table}")
+        var table_recs = table[suffix];
+        //print(f"reading_number:table[{suffix}]={table[suffix]}")
+        //print(f"s={s}")
+        if(table_recs == undefined) {
+          //Logger.log('number_howToRead_keyError:suffix="'+suffix+'"');
+          // ######################################################################
+          //g.error_messages.push('reading_number:KeyError suffix="' + suffix + '"');
+          result += "??" + suffix;
+          console.log('number_howToRead:KeyError result="' + result + '"');
+          fetch(SERVER + "error.py?key=" + encodeURIComponent(suffix));
+          // ######################################################################
+        } else {
+          if(table_recs.length > 1) {
+            var s = table_recs[1][last_word];
+            if(s != undefined) {
+              // Override
+              //Logger.log('number_howToRead_override:s="'+s+'"');
+              result = s;
+            } else {
+              //Logger.log('number_howToRead_noOverride:last_word="'+last_word+'"');
+              result = _default(result, table_recs, last_word, suffix);
+            }
+          } else {
+            result = _default(result, table_recs, last_word, suffix);
+          }
+        }
+    }
+  }
+  return result;
+
+  function _default(result, table_recs, last_word, suffix) {
+    // Default
+    var table_rec_key = table_recs[0];
+    switch(true) {
+      case table_rec_key.substr(0, 1) == "k":
+        var times = (table_rec_key.length  > 1 ? int("0" + table_rec_key.substr(1)) : 2);
+        var table = {いち:1, に:2, さん:3, よん:4, ご:5, ろく:6, なな:7, はち:8, きゅう:9};
+        i = table[result];
+        switch(true) {
+          case i == undefined:
+          case i > times:
+            result += suffix;
+            break;
+          default:
+            var w = ["??", "ひと", "ふた", "みつ", "よつ", "いつ", "むつ", "なな", "や", "ここの"];
+            result = w[i] + suffix;
+        }
+        break;
+      case table_rec_key == "o":
+        //table_1 = table[last_word + suffix]
+        x = suffix.substr(0, 1);
+        switch(true) {
+          case "かきくけこ".indexOf(x) != -1:
+            //Logger.log('number_howToRead_default:ok1 x="'+x+'"')
+            //print(f'reading_number:ok1')
+            if(["いち", "ろく", "はち", "じゅう", "ひゃく"].indexOf(last_word) != -1) {
+              result = result.substr(0, result.length - 1) + "っ";
+            }
+            result += suffix;
+            //print(f'reading_number:ok11 result={result}')
+            break;
+          case "さしすせそたちつてと".indexOf(x) != -1:
+            //Logger.log('number_howToRead_default:ok2 x="'+x+'"')
+            //print(f'reading_number:ok2"')
+            if(["いち", "はち", "じゅう", "ひゃく"].indexOf(last_word) != -1) {
+              result = result.substr(0, result.length - 1) + "っ";
+            }
+            result += suffix;
+            break;
+          case "はひふへほ".indexOf(x) != -1:
+            //Logger.log('number_howToRead_default:ok3 x="'+x+'"')
+            if(["いち", "さん", "よん", "ろく", "はち", "じゅう", "ひゃく" ,"せん" ,"まん"].indexOf(last_word) != 1) {
+              table2 = {は:"ぱ", ひ:"ぴ", ふ:"ぷ", へ:"ぺ", ほ:"ぽ"};
+              suffix = table2[x] + suffix.substr(1);
+            }
+            if(["いち", "ろく", "はち", "じゅう", "ひゃく"].indexOf(last_word) != -1) {
+              result = result.substr(0, result.length - 1) + "っ";
+            }
+            result += suffix;
+            //print(f'reading_number:ok11 result={result}')
+            break;
+          default:
+            //Logger.log('number_howToRead_default:ok9 x="'+x+'"')
+            var s = table_recs[1][result];
+            result = (s != undefined ? s : result + suffix);
+            //print(f'reading_number:result="{result}"')
+        }
+        break;
+      default:
+        result += suffix;
+    }
+    return result;
+  }
+}
+
+function number_toHiragana(string) {
+  //  a.100(p=-1,l=3) / b.100.0(p=3,l=5)
+  var p = string.indexOf(".");
+  var integer = "";
+  var decimal = "";
+  if(p < 0) {
+    integer = string;
+    decimal = "";
+  } else {
+    integer = string.substr(0, p);
+    decimal = string.substr(p + 1);
+  }
+  //Logger.log('number_toHiragana:integer="'+integer+'", decimal="'+decimal+'"');
+
+  var result = "";
+  if(integer == "0" && decimal == "") {
+    result = "れい";
+    //print(f"edit_number:ok1:{result}")
+  
+  } else {  
+    var s = integer.split("").reverse().join("");
+    var integers = [];
+    
+    for(var i = 0; i < integer.length; i += 4) {
+      integers.push(s.substr(0, 4));
+      s = s.substr(4);
+    }
+    
+    //Logger.log('number_toHiragana:integers="'+integers+'"')
+    var unit_i = ["", "まん", "おく", "ちょう", "けい"];
+    var unit_j = ["", "じゅう", "ひゃく", "せん"];
+    
+    var rep_i3 = [["いち ちょう", "いっちょう"], ["はち ちょう", "はっちょう"], ["じゅう ちょう", "じゅっちょう"]];
+    var rep_i4 = [["いち けい", "いっけい"], ["ろく けい", "ろっけい"], ["はち けい", "はっけい"],
+                  ["じゅう けい", "じゅっけい"], ["ひゃく けい", "ひゃっけい"]];
+    //print(unit_i)
+    var rep_j1 = [["いち じゅう", "じゅう"]];
+    var rep_j2 = [["いち ひ", "ひ"], ["さん ひ", "さん び"], ["く ひ", "っぴ"], ["ち ひ", "っぴ"]];
+    var rep_j3 = [["いち せん", "せん"], ["さん せん", "さんぜん"], ["はち せん", "はっせん"]];
+    //Logger.log('number_toHiragana:unit_j="'+unit_j+'"');
+    
+    var result_i = "";
+    for(var i = 0; i < integers.length; i++) {
+      var result_j = "";
+      if(integers[i] != "0000") {
+        for(var j = 0; j < integers[i].length; j++) {
+          var work_unit = ["", "いち", "に", "さん", "よん", "ご", "ろく", "なな", "はち", "きゅう"];
+          var x = Number(integers[i][j]);
+          var s = work_unit[x];
+          //Logger.log('number_toHiragana:x="'+x+'", s="'+s+'"')
+          if(x != 0 && unit_j[j] != "") {
+            s += " " + unit_j[j];
+          }
+          var reps = undefined;
+          switch(j) {
+            case 1:  reps = rep_j1; break;
+            case 2:  reps = rep_j2; break;
+            case 3:  reps = rep_j3; break;
+          }
+          if(reps != undefined) {
+            for(var r in reps) {
+              s = s.replace(reps[r][0], reps[r][1]);
+              //Logger.log('number_toHiragana:i="'+i+'", j="'+j+'", s="'+s+'", reps['+r+']=["'+reps[r][0]+'","'+reps[r][1]+'"]')
+            }
+          }
+          if(s != "") {
+            result_j = " " + s + result_j;
+          }
+          //Logger.log('number_toHiragana:result_j="'+result_j+'"')
+        }
+      }        
+      var s = result_j;
+      if(unit_i[i] != "") {
+        s += " " + unit_i[i];
+      }
+      //Logger.log('number_toHiragana:s="'+s+'"')
+      var reps = undefined;
+      switch(i) {
+        case 3:  reps = rep_i3; break;
+        case 4:  reps = rep_i4; break;
+      }
+      if(reps != undefined) {
+        for(var r in reps) {
+          s = s.replace(reps[r][0], reps[r][1]);
+          //print(f"edit_number.i:i={i}, s={s}, r=[{r[0]},{r[1]}]")
+        }
+      }
+      result_i = s + result_i;
+      //Logger.log('number_toHiragana:result_i="'+result_i+'"')
+    }  
+        
+    result = result_i;
+    //print("edit_number:result=" + result)
+    
+    if(decimal != "") {
+      if(result == "") {
+        result = "れい";
+      }
+      result += " てん";
+      var reps = [["いち てん", "いってん"], ["に てん", "にいてん"], ["ご てん", "ごうてん"], ["はち てん", "はってん"]];
+      for(var r in reps) {
+        result = result.replace(reps[r][0], reps[r][1]);
+      }
+        
+      var work_unit = ["れい", "いち", "にい", "さん", "よん", "ごう", "ろく", "なな", "はち", "きゅう"];
+      var i = 0;
+      for(; i < decimal.length; i++) {
+        result += " " + work_unit[Number(decimal[i])];
+        //print(f"edit_number:i={i}")
+      }
+      
+      //Logger.log('number_toHiragana:result="'+result+'"');
+      //Logger.log('number_toHiragana:i="'+i+'"');
+      if(i == 1) {
+        if(["にい", "ごう"].indexOf(result.substr(result.length - 2, 2)) != -1) {
+          result = result.substr(0, result.length - 1);
+        }
+      }
+      //print(f"edit_number:result={result}")
+    }
+  }  
+  //print(f'edit_number end:result="{result}"')
+        
+  //var last_words = result.rsplit(" ").pop();
+  //l = len(last_word) - 1
+  //print(f'edit_number end:last_word[{l}]="{last_word[l]}"')
+  //console.log('number_toHiragana:result="'+result+'"');
+  var text = result.replace(/ /g, "");
+  var lasts = result.split(" ");
+  var l = lasts.length;
+  //Logger.log('number_toHiragana:l="'+l+'", lasts="'+lasts+'"');
+  //Logger.log('number_toHiragana:text="'+text+'"');
+  //Logger.log('number_toHiragana:last="'+lasts[lasts.length - 1]+'"');
+  return [text, lasts[lasts.length - 1]];
+}
+main();
+</script>
+
+<!--
+
+<div>
+<div><textarea id="text" rows="10">Please write Japanese sentences</textarea></div>
+<script>
+var bodyContets = document.getElementById('text');
+bodyContets.addEventListener('keypress', onKeyPress);
+</script>
+<div id="sentence_lists"></div>  
+
+
+<dev id="quiz">
+
+<script>
+document.write(japanese_make_html_lists("午前７時に+0.50ポイントで食べれました。"));
+</script>
+
+
+<tr style="visibility:collapse;">
+<tr style="visibility:visible;">
+<td></td>
+<td colspan="2">
+<table class="jisho_table" width="100%"></table>
+</td>
+</tr>
+
+
+</table>
+
+</div>
+<div id="note"></dev>
+</div>
+-->
+
+
